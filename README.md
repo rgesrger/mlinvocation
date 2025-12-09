@@ -1,4 +1,5 @@
-AzureTrace.parquet: inference data. (head of dataset below)\n
+AzureTrace.parquet: inference data. (head of dataset below)
+
                          TIMESTAMP token_bucket
 0  2024-05-12 00:00:00.001163+00:00        large
 1  2024-05-12 00:00:00.041683+00:00       medium
