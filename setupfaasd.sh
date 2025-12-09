@@ -1,35 +1,28 @@
 #!/bin/bash
 set -e
 
-# 1. Install Dependencies
-apt-get update
-apt-get install -y curl git bridge-utils runc containerd
+# 1. Install containerd & git
+apt-get update && apt-get install -y git containerd curl
 
-# 2. Configure Kernel Networking (Required for containers to talk to internet)
-echo "net.ipv4.ip_forward = 1" | tee -a /etc/sysctl.conf
-echo "net.bridge.bridge-nf-call-iptables = 1" | tee -a /etc/sysctl.conf
-sysctl -p
+# 2. Load Bridge Module (FIXES YOUR ERROR)
+modprobe br_netfilter
 
-# 3. Install CNI Network Plugins
-mkdir -p /opt/cni/bin
-curl -sSL "https://github.com/containernetworking/plugins/releases/download/v1.3.0/cni-plugins-linux-amd64-v1.3.0.tgz" | tar -xz -C /opt/cni/bin
+# 3. Enable Kernel Forwarding
+sysctl -w net.ipv4.ip_forward=1
+sysctl -w net.bridge.bridge-nf-call-iptables=1
 
-# 4. Download faasd binaries (Latest)
-mkdir -p /var/lib/faasd/secrets
-VERSION=$(curl -s "https://api.github.com/repos/openfaas/faasd/releases/latest" | grep '"tag_name":' | cut -d '"' -f 4)
+# 4. Install faasd using the official hack script
+# This script automatically downloads the binary, CNI plugins, and sets up systemd
+cd /tmp
+git clone https://github.com/openfaas/faasd --depth=1
+cd faasd
+./hack/install.sh
 
-curl -fSL "https://github.com/openfaas/faasd/releases/download/$VERSION/faasd" -o "/usr/local/bin/faasd"
-curl -fSL "https://github.com/openfaas/faasd/releases/download/$VERSION/faasd-provider" -o "/usr/local/bin/faasd-provider"
-chmod +x /usr/local/bin/faasd /usr/local/bin/faasd-provider
-
-# 5. Install Services & CLI
-git clone https://github.com/openfaas/faasd.git
-cd faasd && ./hack/install.sh && cd .. && rm -rf faasd
+# 5. Install CLI
 curl -sL https://cli.openfaas.com | sh
 
-# 6. Print Password
-echo "Waiting for password generation..."
+# 6. Wait & Print Password
+echo "Waiting for faasd to start..."
 sleep 15
-echo "Setup Done. Your Password:"
 cat /var/lib/faasd/secrets/basic-auth-password
 echo ""
