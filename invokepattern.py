@@ -12,8 +12,8 @@ def replay_trace(data_stream, invoke_url, timeout=1.0):
     start_time = time.time()
 
     for row in data_stream:
-        ts = float(row["timestamp"])
-        tokens = row["tokens"]
+        ts = float(row["TIMESTAMP"])
+        tokens = row["ContextTokens"]
 
         # Pace execution according to trace timestamp
         now = time.time()
@@ -27,7 +27,7 @@ def replay_trace(data_stream, invoke_url, timeout=1.0):
         }
 
         try:
-            # Fire-and-forget invocation
+            # invocation TODO: Figure out format
             requests.post(invoke_url, json=payload, timeout=timeout)
         except Exception:
             # Ignore network errors to keep replay going
