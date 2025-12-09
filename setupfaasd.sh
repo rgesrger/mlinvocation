@@ -4,150 +4,83 @@ set -e
 #############################
 # Config
 #############################
-FUNC_NAME="hello-ubuntu2404"
-LANGUAGE="python3"
+FUNC_NAME="hello-test"
+FUNC_IMAGE="hello-test:latest"
 OPENFAAS_URL="http://127.0.0.1:8080"
-USER_NAME=$(whoami)
 
 #############################
-# Step 0: Locale fix
-#############################
-echo "[+] Configuring locale"
-sudo apt-get update -y
-sudo apt-get install -y locales curl git ca-certificates gnupg lsb-release uidmap
-
-sudo locale-gen en_US.UTF-8
-sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
-export LANG=en_US.UTF-8
-export LC_ALL=en_US.UTF-8
-
-#############################
-# Step 1: Clean any broken Docker
-#############################
-echo "[+] Removing any existing Docker"
-sudo systemctl stop docker 2>/dev/null || true
-sudo systemctl disable docker 2>/dev/null || true
-sudo systemctl unmask docker 2>/dev/null || true
-
-sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
-sudo apt-get purge -y docker docker-engine docker.io containerd runc || true
-
-sudo rm -rf /var/lib/docker
-sudo rm -rf /var/lib/containerd
-sudo rm -rf /etc/docker
-sudo rm -rf /etc/systemd/system/docker.service.d
-sudo rm -f /etc/init.d/docker
-
-sudo systemctl daemon-reload
-
-#############################
-# Step 2: Install Docker (official)
+# Step 0: Install Docker
 #############################
 echo "[+] Installing Docker"
+sudo apt-get update -y
+sudo apt-get install -y \
+    ca-certificates curl gnupg lsb-release
 
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-rm -f get-docker.sh
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt-get update -y
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io
 
 sudo systemctl enable docker
 sudo systemctl start docker
 
-echo "[+] Waiting for Docker..."
-for i in {1..60}; do
-  if sudo docker info >/dev/null 2>&1; then
-    echo "[+] Docker is ready"
-    break
-  fi
+echo "[+] Docker installed and running"
+
+#############################
+# Step 1: Ensure faasd is running
+#############################
+echo "[+] Waiting for faasd gateway..."
+until curl -s "$OPENFAAS_URL/healthz" | grep -q "OK"; do
   sleep 2
 done
-
-if ! sudo docker info >/dev/null 2>&1; then
-  echo "[!] Docker failed to start:"
-  sudo journalctl -u docker --no-pager | tail -100
-  exit 1
-fi
+echo "[+] OpenFaaS gateway is up"
 
 #############################
-# Step 3: Install faasd
+# Step 2: Prepare function folder
 #############################
-echo "[+] Installing faasd"
-
-cd "$HOME"
-rm -rf faasd
-git clone https://github.com/openfaas/faasd.git
-cd faasd
-
-sudo ./hack/install.sh
-
-#############################
-# Step 4: Wait for faasd gateway
-#############################
-echo "[+] Waiting for OpenFaaS gateway..."
-
-for i in {1..120}; do
-  if curl -fs http://127.0.0.1:8080/system/functions >/dev/null 2>&1; then
-    echo "[+] Gateway ready"
-    break
-  fi
-  sleep 2
-done
-
-if ! curl -fs http://127.0.0.1:8080/system/functions >/dev/null 2>&1; then
-  echo "[!] OpenFaaS gateway failed to come up"
-  sudo journalctl -u faasd --no-pager | tail -100
-  exit 1
-fi
-
-#############################
-# Step 5: Install faas-cli
-#############################
-echo "[+] Installing faas-cli"
-
-if ! command -v faas-cli >/dev/null 2>&1; then
-  curl -sSL https://cli.openfaas.com | sudo sh
-fi
-
-#############################
-# Step 6: Login to OpenFaaS
-#############################
-echo "[+] Logging into OpenFaaS"
-
-PASSWORD=$(sudo cat /var/lib/faasd/secrets/basic-auth-password)
-
-echo "$PASSWORD" | faas-cli login \
-  --gateway "$OPENFAAS_URL" \
-  --username admin \
-  --password-stdin
-
-#############################
-# Step 7: Create function
-#############################
-cd "$HOME"
-
-if [ ! -f "$FUNC_NAME.yml" ]; then
-  faas-cli new "$FUNC_NAME" --lang "$LANGUAGE"
-fi
-
-#############################
-# Step 8: Write handler
-#############################
+echo "[+] Creating function folder"
+mkdir -p "$HOME/$FUNC_NAME"
 cat > "$HOME/$FUNC_NAME/handler.py" <<'EOF'
 def handle(req):
-    return f"Hello from faasd on Ubuntu 24.04!\nYou said:\n{req}\n"
+    return f"Hello from faasd via REST API!\nYou said:\n{req}\n"
+EOF
+
+cat > "$HOME/$FUNC_NAME/Dockerfile" <<'EOF'
+FROM python:3.11-slim
+WORKDIR /function
+COPY handler.py .
+ENV fprocess="python3 handler.py"
+CMD ["python3", "handler.py"]
 EOF
 
 #############################
-# Step 9: Build & deploy
+# Step 3: Build Docker image
 #############################
-faas-cli build -f "$FUNC_NAME.yml"
-faas-cli deploy -f "$FUNC_NAME.yml"
+echo "[+] Building Docker image"
+docker build -t "$FUNC_IMAGE" "$HOME/$FUNC_NAME"
 
 #############################
-# Step 10: Test
+# Step 4: Deploy function via REST API
 #############################
-echo "[+] Testing function..."
-curl -s -X POST "$OPENFAAS_URL/function/$FUNC_NAME" -d "test input"
+PASSWORD=$(sudo cat /var/lib/faasd/secrets/basic-auth-password)
+
+echo "[+] Deploying function via REST API"
+curl -s -X POST "$OPENFAAS_URL/system/functions" \
+    -u admin:"$PASSWORD" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"service\": \"$FUNC_NAME\",
+        \"image\": \"$FUNC_IMAGE\",
+        \"envProcess\": \"python3 handler.py\",
+        \"network\": \"func_functions\"
+    }"
+
+#############################
+# Step 5: Test function
+#############################
+echo "[+] Invoking function"
+curl -s -X POST "$OPENFAAS_URL/function/$FUNC_NAME" -d "Hello REST API"
 echo
-
-echo "[+] Done"
-echo "[+] UI: $OPENFAAS_URL/ui"
